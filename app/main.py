@@ -40,7 +40,7 @@ if STRIPE_SECRET:
 # ─── APP ──────────────────────────────────────────────────
 app = FastAPI(title="Liste Party API", version="3.0.0")
 
-allowed_origins = os.environ.get("CORS_ORIGINS", "*").split(",")
+allowed_origins = os.environ.get("CORS_ORIGINS", "https://ashy-wave-040a8fd0f.7.azurestaticapps.net").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
