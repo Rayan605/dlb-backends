@@ -37,11 +37,12 @@ class Token(BaseModel):
 
 # -------- EVENTS --------
 class EventImage(BaseModel):
-    id:       int
-    filename: str
-    url:      str
-    position: int
-    is_recap: bool = False
+    id:         int
+    filename:   str
+    url:        str
+    position:   int
+    is_recap:   bool = False
+    media_type: str  = "image"  # "image" | "video"
 
 
 class EventOut(BaseModel):

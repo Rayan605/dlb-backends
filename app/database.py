@@ -66,7 +66,7 @@ def init_db():
         )
         """)
 
-        # EVENT IMAGES
+        # EVENT IMAGES — media_type: 'image' | 'video'
         cur.execute("""
         CREATE TABLE IF NOT EXISTS event_images (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,6 +74,7 @@ def init_db():
             filename    TEXT NOT NULL,
             position    INTEGER DEFAULT 0,
             is_recap    INTEGER DEFAULT 0,
+            media_type  TEXT NOT NULL DEFAULT 'image',
             FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
         )
         """)
@@ -199,3 +200,8 @@ def _migrate(cur):
     g_cols = {r["name"] for r in cur.execute("PRAGMA table_info(guest_reservations)").fetchall()}
     if "scanned_at" not in g_cols:
         cur.execute("ALTER TABLE guest_reservations ADD COLUMN scanned_at TEXT")
+
+    # event_images : ajout media_type
+    ei_cols = {r["name"] for r in cur.execute("PRAGMA table_info(event_images)").fetchall()}
+    if "media_type" not in ei_cols:
+        cur.execute("ALTER TABLE event_images ADD COLUMN media_type TEXT NOT NULL DEFAULT 'image'")

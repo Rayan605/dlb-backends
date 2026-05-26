@@ -26,13 +26,23 @@ from .auth import (
 # ─── CONFIG ───────────────────────────────────────────────
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", Path(__file__).parent.parent / "uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-ALLOWED_IMG = {".jpg", ".jpeg", ".png", ".webp", ".avif"}
-MAX_IMG_MB  = 8
+ALLOWED_IMG   = {".jpg", ".jpeg", ".png", ".webp", ".avif"}
+ALLOWED_VIDEO = {".mp4", ".mov", ".webm", ".avi"}
+MAX_IMG_MB    = 8
+MAX_VIDEO_MB  = 200
 
 STRIPE_SECRET         = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 FRONTEND_URL          = os.environ.get("FRONTEND_URL", "http://localhost:8000")
-BACKEND_PUBLIC_URL    = os.environ.get("BACKEND_PUBLIC_URL", "http://localhost:8000")
+
+def _normalize_url(raw: str) -> str:
+    """Garantit que l URL a un scheme http(s)://."""
+    url = (raw or "").strip().rstrip("/")
+    if url and not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url or "http://localhost:8000"
+
+BACKEND_PUBLIC_URL = _normalize_url(os.environ.get("BACKEND_PUBLIC_URL", "http://localhost:8000"))
 
 if STRIPE_SECRET:
     stripe.api_key = STRIPE_SECRET
@@ -184,7 +194,7 @@ def get_event(event_id: int):
 
 def _event_extras(conn, event):
     imgs = conn.execute(
-        "SELECT id,filename,position,is_recap FROM event_images WHERE event_id=? ORDER BY position ASC",
+        "SELECT id,filename,position,is_recap,media_type FROM event_images WHERE event_id=? ORDER BY position ASC",
         (event["id"],),
     ).fetchall()
     taken = (conn.execute(
@@ -201,9 +211,14 @@ def _event_extras(conn, event):
     }
 
 def _img_out(img):
-    return {"id": img["id"], "filename": img["filename"],
-            "url": f"{BACKEND_PUBLIC_URL}/uploads/{img['filename']}",
-            "position": img["position"], "is_recap": bool(img.get("is_recap"))}
+    return {
+        "id":         img["id"],
+        "filename":   img["filename"],
+        "url":        f"{BACKEND_PUBLIC_URL}/uploads/{img['filename']}",
+        "position":   img["position"],
+        "is_recap":   bool(img.get("is_recap")),
+        "media_type": img.get("media_type") or "image",
+    }
 
 
 @app.post("/events", response_model=schemas.EventOut, status_code=201)
@@ -234,7 +249,7 @@ async def create_event(
 @app.post("/events/{event_id}/recap-images", response_model=schemas.EventOut)
 async def add_recap_images(
     event_id: int,
-    images: List[UploadFile] = File(...),
+    images: List[UploadFile] = File(...),  # accepte images ET vidéos
     admin: dict = Depends(require_admin),
 ):
     with get_db() as conn:
@@ -282,6 +297,7 @@ def delete_event(event_id: int, admin: dict = Depends(require_admin)):
 
 
 async def _save_imgs(conn, event_id, images, is_recap):
+    """Sauvegarde des fichiers médias (images et vidéos)."""
     start = (conn.execute(
         "SELECT COALESCE(MAX(position),0) as m FROM event_images WHERE event_id=? AND is_recap=?",
         (event_id, 1 if is_recap else 0)
@@ -289,15 +305,19 @@ async def _save_imgs(conn, event_id, images, is_recap):
     for idx, img in enumerate(images or []):
         if not img.filename: continue
         ext = Path(img.filename).suffix.lower()
-        if ext not in ALLOWED_IMG: continue
-        content = await img.read()
-        if len(content) > MAX_IMG_MB * 1024 * 1024:
-            raise HTTPException(400, f"Image trop lourde : {img.filename}")
+        is_video = ext in ALLOWED_VIDEO
+        is_image = ext in ALLOWED_IMG
+        if not is_video and not is_image: continue
+        media_type = "video" if is_video else "image"
+        max_mb = MAX_VIDEO_MB if is_video else MAX_IMG_MB
+        content_bytes = await img.read()
+        if len(content_bytes) > max_mb * 1024 * 1024:
+            raise HTTPException(400, f"Fichier trop lourd ({img.filename} — max {max_mb} Mo)")
         fname = f"{uuid.uuid4().hex}{ext}"
-        (UPLOAD_DIR / fname).write_bytes(content)
+        (UPLOAD_DIR / fname).write_bytes(content_bytes)
         conn.execute(
-            "INSERT INTO event_images (event_id,filename,position,is_recap) VALUES (?,?,?,?)",
-            (event_id, fname, start + idx, 1 if is_recap else 0),
+            "INSERT INTO event_images (event_id,filename,position,is_recap,media_type) VALUES (?,?,?,?,?)",
+            (event_id, fname, start + idx, 1 if is_recap else 0, media_type),
         )
 
 
