@@ -69,11 +69,18 @@ class FormulaOut(BaseModel):
     max_guests:  int = 0
 
 
+class FormulaCreate(BaseModel):
+    name:        str = Field(min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=500)
+    price_cents: int = Field(ge=0)
+    max_guests:  int = Field(default=0, ge=0)
+
+
 class FormulaUpdate(BaseModel):
-    name:        Optional[str] = None
-    description: Optional[str] = None
-    price_cents: Optional[int] = None
-    max_guests:  Optional[int] = None
+    name:        Optional[str] = Field(default=None, min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=500)
+    price_cents: Optional[int] = Field(default=None, ge=0)
+    max_guests:  Optional[int] = Field(default=None, ge=0)
 
 
 # -------- RESERVATIONS --------

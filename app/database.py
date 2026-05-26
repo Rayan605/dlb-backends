@@ -6,7 +6,8 @@ import os
 from contextlib import contextmanager
 from typing import Generator
 
-DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "soiree.db"))
+# Azure App Service : /home est le seul volume persistant entre redémarrages
+DB_PATH = os.environ.get("DB_PATH", "/home/soiree.db")
 
 
 def dict_factory(cursor, row):

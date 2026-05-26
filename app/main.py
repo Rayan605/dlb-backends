@@ -40,7 +40,7 @@ if STRIPE_SECRET:
 # ─── APP ──────────────────────────────────────────────────
 app = FastAPI(title="Liste Party API", version="3.0.0")
 
-allowed_origins = os.environ.get("CORS_ORIGINS", "https://ashy-wave-040a8fd0f.7.azurestaticapps.net").split(",")
+allowed_origins = os.environ.get("CORS_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -308,6 +308,17 @@ def list_formulas():
         return conn.execute("SELECT * FROM formulas ORDER BY position ASC, id ASC").fetchall()
 
 
+@app.post("/formulas", response_model=schemas.FormulaOut, status_code=201)
+def create_formula(payload: schemas.FormulaCreate, admin: dict = Depends(require_admin)):
+    with get_db() as conn:
+        max_pos = conn.execute("SELECT COALESCE(MAX(position), 0) as m FROM formulas").fetchone()["m"]
+        cur = conn.execute(
+            "INSERT INTO formulas (name, description, price_cents, max_guests, position) VALUES (?,?,?,?,?)",
+            (payload.name.strip(), payload.description, payload.price_cents, payload.max_guests, max_pos + 1),
+        )
+        return conn.execute("SELECT * FROM formulas WHERE id=?", (cur.lastrowid,)).fetchone()
+
+
 @app.patch("/formulas/{formula_id}", response_model=schemas.FormulaOut)
 def update_formula(formula_id: int, payload: schemas.FormulaUpdate, admin: dict = Depends(require_admin)):
     with get_db() as conn:
@@ -324,10 +335,30 @@ def update_formula(formula_id: int, payload: schemas.FormulaUpdate, admin: dict 
         return conn.execute("SELECT * FROM formulas WHERE id=?", (formula_id,)).fetchone()
 
 
+@app.delete("/formulas/{formula_id}", status_code=204)
+def delete_formula(formula_id: int, admin: dict = Depends(require_admin)):
+    with get_db() as conn:
+        if not conn.execute("SELECT id FROM formulas WHERE id=?", (formula_id,)).fetchone():
+            raise HTTPException(404, "Formule introuvable.")
+        used = conn.execute(
+            "SELECT COUNT(*) as c FROM reservations WHERE formula_id=? AND status IN ('paid','pending')",
+            (formula_id,),
+        ).fetchone()["c"]
+        if used > 0:
+            raise HTTPException(409, f"Impossible de supprimer : {used} réservation(s) active(s) utilisent cette formule.")
+        conn.execute("DELETE FROM formulas WHERE id=?", (formula_id,))
+    return None
+
+
 # ─── RESERVATIONS ─────────────────────────────────────────
 @app.post("/reservations/checkout", response_model=schemas.CheckoutSessionOut)
 def create_checkout(payload: schemas.ReservationCreate, user: dict = Depends(get_current_user)):
-    # Validations DB en premier (avant de vérifier Stripe)
+    """
+    Règles :
+    - Si une PAID existe pour cet user+event → 409
+    - Si une PENDING existe → elle est supprimée et remplacée (user avait abandonné Stripe)
+    - Places comptées en excluant la pending de cet user (pour ne pas se bloquer soi-même)
+    """
     with get_db() as conn:
         ev = conn.execute("SELECT * FROM events WHERE id=?", (payload.event_id,)).fetchone()
         if not ev:
@@ -339,33 +370,36 @@ def create_checkout(payload: schemas.ReservationCreate, user: dict = Depends(get
         if not formula:
             raise HTTPException(404, "Formule introuvable.")
 
-        # Vérif places (quantity = 1 forcé)
-        taken = conn.execute(
-            "SELECT COALESCE(SUM(quantity),0) as t FROM reservations WHERE event_id=? AND status IN ('paid','pending')",
-            (payload.event_id,),
+        # Paid existante → bloquer
+        if conn.execute(
+            "SELECT id FROM reservations WHERE user_id=? AND event_id=? AND status='paid'",
+            (user["id"], payload.event_id),
+        ).fetchone():
+            raise HTTPException(409, "T'as déjà une réservation confirmée pour cette soirée.")
+
+        # Places dispo : on exclut la pending de cet user (elle sera remplacée)
+        taken_others = conn.execute(
+            """SELECT COALESCE(SUM(quantity),0) as t FROM reservations
+               WHERE event_id=? AND status IN ('paid','pending')
+               AND NOT (user_id=? AND status='pending')""",
+            (payload.event_id, user["id"]),
         ).fetchone()["t"] or 0
-        if taken + 1 > ev["max_people"]:
+        if taken_others + 1 > ev["max_people"]:
             raise HTTPException(409, "Plus de places disponibles, désolé frère.")
 
-        # Vérif unicité — un user ne peut pas réserver 2x la même soirée
-        existing = conn.execute(
-            "SELECT id FROM reservations WHERE user_id=? AND event_id=? AND status IN ('paid','pending')",
+        # Supprimer l'ancienne pending abandonnée + insérer la nouvelle
+        conn.execute(
+            "DELETE FROM reservations WHERE user_id=? AND event_id=? AND status='pending'",
             (user["id"], payload.event_id),
-        ).fetchone()
-        if existing:
-            raise HTTPException(409, "T'as déjà une réservation pour cette soirée.")
-
-    if not STRIPE_SECRET:
-        raise HTTPException(503, "Stripe n'est pas configuré (STRIPE_SECRET_KEY manquant).")
-
-    with get_db() as conn:
-        ev = conn.execute("SELECT * FROM events WHERE id=?", (payload.event_id,)).fetchone()
-        formula = conn.execute("SELECT * FROM formulas WHERE id=?", (payload.formula_id,)).fetchone()
+        )
         cur = conn.execute(
             "INSERT INTO reservations (user_id,event_id,formula_id,quantity,status) VALUES (?,?,?,1,'pending')",
             (user["id"], payload.event_id, payload.formula_id),
         )
         resa_id = cur.lastrowid
+
+    if not STRIPE_SECRET:
+        raise HTTPException(503, "Stripe n'est pas configuré (STRIPE_SECRET_KEY manquant).")
 
     try:
         session = stripe.checkout.Session.create(
@@ -401,7 +435,6 @@ def create_checkout(payload: schemas.ReservationCreate, user: dict = Depends(get
         conn.execute("UPDATE reservations SET stripe_session_id=? WHERE id=?", (session.id, resa_id))
 
     return {"checkout_url": session.url, "session_id": session.id, "reservation_id": resa_id}
-
 
 @app.post("/stripe/webhook")
 async def stripe_webhook(request: Request):
