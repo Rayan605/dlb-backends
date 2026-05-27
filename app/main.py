@@ -289,6 +289,14 @@ def mark_past(event_id: int, is_past: bool = True, admin: dict = Depends(require
 def delete_event(event_id: int, admin: dict = Depends(require_admin)):
     with get_db() as conn:
         imgs = conn.execute("SELECT filename FROM event_images WHERE event_id=?", (event_id,)).fetchall()
+        # Cascade : guest_reservations → reservations → event (évite FK constraint)
+        resa_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM reservations WHERE event_id=?", (event_id,)
+        ).fetchall()]
+        if resa_ids:
+            ph = ",".join("?" * len(resa_ids))
+            conn.execute(f"DELETE FROM guest_reservations WHERE reservation_id IN ({ph})", resa_ids)
+        conn.execute("DELETE FROM reservations WHERE event_id=?", (event_id,))
         conn.execute("DELETE FROM events WHERE id=?", (event_id,))
     for img in imgs:
         try: (UPLOAD_DIR / img["filename"]).unlink(missing_ok=True)
