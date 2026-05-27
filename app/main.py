@@ -404,7 +404,9 @@ def create_checkout(payload: schemas.ReservationCreate, user: dict = Depends(get
                AND NOT (user_id=? AND status='pending')""",
             (payload.event_id, user["id"]),
         ).fetchone()["t"] or 0
-        if taken_others + 1 > ev["max_people"]:
+        # quantity = 1 (hôte) + max_guests : on réserve toutes les places dès l achat
+        quantity = 1 + (formula.get("max_guests") or 0)
+        if taken_others + quantity > ev["max_people"]:
             raise HTTPException(409, "Plus de places disponibles, désolé frère.")
 
         # Supprimer l'ancienne pending abandonnée + insérer la nouvelle
@@ -413,8 +415,8 @@ def create_checkout(payload: schemas.ReservationCreate, user: dict = Depends(get
             (user["id"], payload.event_id),
         )
         cur = conn.execute(
-            "INSERT INTO reservations (user_id,event_id,formula_id,quantity,status) VALUES (?,?,?,1,'pending')",
-            (user["id"], payload.event_id, payload.formula_id),
+            "INSERT INTO reservations (user_id,event_id,formula_id,quantity,status) VALUES (?,?,?,?,'pending')",
+            (user["id"], payload.event_id, payload.formula_id, quantity),
         )
         resa_id = cur.lastrowid
 
@@ -455,6 +457,75 @@ def create_checkout(payload: schemas.ReservationCreate, user: dict = Depends(get
         conn.execute("UPDATE reservations SET stripe_session_id=? WHERE id=?", (session.id, resa_id))
 
     return {"checkout_url": session.url, "session_id": session.id, "reservation_id": resa_id}
+
+@app.post("/reservations/free", response_model=schemas.ReservationOut)
+def create_free_reservation(payload: schemas.ReservationCreate, user: dict = Depends(get_current_user)):
+    """
+    Réservation gratuite — uniquement pour les comptes avec gender='F' et la formule à 0€.
+    Génère directement le QR code sans passer par Stripe.
+    """
+    if user.get("gender") != "F":
+        raise HTTPException(403, "Cette formule gratuite est réservée aux filles.")
+
+    with get_db() as conn:
+        ev = conn.execute("SELECT * FROM events WHERE id=?", (payload.event_id,)).fetchone()
+        if not ev:
+            raise HTTPException(404, "Soirée introuvable.")
+        if ev.get("is_past"):
+            raise HTTPException(400, "Cette soirée est terminée.")
+
+        formula = conn.execute("SELECT * FROM formulas WHERE id=?", (payload.formula_id,)).fetchone()
+        if not formula:
+            raise HTTPException(404, "Formule introuvable.")
+        if formula.get("price_cents", 1) != 0:
+            raise HTTPException(400, "Cette formule n'est pas gratuite.")
+
+        # Paid existante → bloquer
+        if conn.execute(
+            "SELECT id FROM reservations WHERE user_id=? AND event_id=? AND status='paid'",
+            (user["id"], payload.event_id),
+        ).fetchone():
+            raise HTTPException(409, "T'as déjà une réservation confirmée pour cette soirée.")
+
+        # Places dispo
+        taken_others = conn.execute(
+            """SELECT COALESCE(SUM(quantity),0) as t FROM reservations
+               WHERE event_id=? AND status IN ('paid','pending')
+               AND NOT (user_id=? AND status='pending')""",
+            (payload.event_id, user["id"]),
+        ).fetchone()["t"] or 0
+        quantity = 1 + (formula.get("max_guests") or 0)
+        if taken_others + quantity > ev["max_people"]:
+            raise HTTPException(409, "Plus de places disponibles, désolé frère.")
+
+        # Supprimer une éventuelle pending, créer directement en 'paid'
+        conn.execute(
+            "DELETE FROM reservations WHERE user_id=? AND event_id=? AND status='pending'",
+            (user["id"], payload.event_id),
+        )
+        qr_token  = uuid.uuid4().hex
+        inv_token = uuid.uuid4().hex if (formula.get("max_guests") or 0) > 0 else None
+        cur = conn.execute(
+            """INSERT INTO reservations
+               (user_id,event_id,formula_id,quantity,status,qr_token,invite_token,amount_paid_cents,paid_at)
+               VALUES (?,?,?,?,'paid',?,?,0,CURRENT_TIMESTAMP)""",
+            (user["id"], payload.event_id, payload.formula_id, quantity, qr_token, inv_token),
+        )
+        resa_id = cur.lastrowid
+
+        res = conn.execute(
+            """SELECT r.*, e.title as event_title, e.date as event_date,
+                      f.name as formula_name, f.max_guests as formula_max_guests,
+                      u.first_name as holder_first_name, u.last_name as holder_last_name
+               FROM reservations r
+               JOIN events e  ON e.id=r.event_id
+               JOIN formulas f ON f.id=r.formula_id
+               JOIN users u   ON u.id=r.user_id
+               WHERE r.id=?""",
+            (resa_id,),
+        ).fetchone()
+        return res
+
 
 @app.post("/stripe/webhook")
 async def stripe_webhook(request: Request):
@@ -627,12 +698,14 @@ def scan_qr(qr_token: str, scanner: dict = Depends(require_scanner)):
                 )
             # Valide → marquer
             conn.execute("UPDATE reservations SET scanned_at=? WHERE qr_token=?", (now, qr_token))
+            holder_user = conn.execute("SELECT gender FROM users WHERE id=?", (res["user_id"],)).fetchone()
             return schemas.ScanResult(
                 valid=True, type="reservation",
                 message="✓ Réservation valide. Bienvenue dans le bon.",
                 holder_name=f"{res['holder_first']} {res['holder_last']}",
                 event_title=res["event_title"], event_date=res["event_date"],
                 formula_name=res["formula_name"],
+                gender=holder_user["gender"] if holder_user else None,
             )
 
         # --- Réservation invité ---
@@ -669,12 +742,14 @@ def scan_qr(qr_token: str, scanner: dict = Depends(require_scanner)):
                     already_scanned=True, scanned_at=gr["scanned_at"],
                 )
             conn.execute("UPDATE guest_reservations SET scanned_at=? WHERE qr_token=?", (now, qr_token))
+            guest_gender = conn.execute("SELECT gender FROM users WHERE id=?", (gr["guest_user_id"],)).fetchone()
             return schemas.ScanResult(
                 valid=True, type="guest",
                 message=f"✓ Invité valide — hôte : {gr['host_first']} {gr['host_last']}.",
                 holder_name=f"{gr['guest_first']} {gr['guest_last']}",
                 event_title=gr["event_title"], event_date=gr["event_date"],
                 formula_name=f"Invité de {gr['host_first']} {gr['host_last']}",
+                gender=guest_gender["gender"] if guest_gender else None,
             )
 
     # Token inconnu

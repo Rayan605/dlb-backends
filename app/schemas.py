@@ -146,3 +146,4 @@ class ScanResult(BaseModel):
     formula_name: Optional[str] = None
     already_scanned: bool = False
     scanned_at:   Optional[str] = None
+    gender:       Optional[str] = None   # 'M' | 'F' | 'X' — pour le toast rose
