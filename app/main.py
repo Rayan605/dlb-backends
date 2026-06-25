@@ -341,8 +341,8 @@ def create_formula(payload: schemas.FormulaCreate, admin: dict = Depends(require
     with get_db() as conn:
         max_pos = conn.execute("SELECT COALESCE(MAX(position), 0) as m FROM formulas").fetchone()["m"]
         cur = conn.execute(
-            "INSERT INTO formulas (name, description, price_cents, max_guests, position) VALUES (?,?,?,?,?)",
-            (payload.name.strip(), payload.description, payload.price_cents, payload.max_guests, max_pos + 1),
+            "INSERT INTO formulas (name, description, price_cents, max_guests, position, is_girls_only) VALUES (?,?,?,?,?,?)",
+            (payload.name.strip(), payload.description, payload.price_cents, payload.max_guests, max_pos + 1, payload.is_girls_only),
         )
         return conn.execute("SELECT * FROM formulas WHERE id=?", (cur.lastrowid,)).fetchone()
 
@@ -353,7 +353,7 @@ def update_formula(formula_id: int, payload: schemas.FormulaUpdate, admin: dict 
         if not conn.execute("SELECT id FROM formulas WHERE id=?", (formula_id,)).fetchone():
             raise HTTPException(404, "Formule introuvable.")
         ups, params = [], []
-        for f in ("name", "description", "price_cents", "max_guests"):
+        for f in ("name", "description", "price_cents", "max_guests", "is_girls_only"):
             v = getattr(payload, f)
             if v is not None:
                 ups.append(f"{f}=?"); params.append(v)
@@ -473,7 +473,7 @@ def create_free_reservation(payload: schemas.ReservationCreate, user: dict = Dep
     Génère directement le QR code sans passer par Stripe.
     """
     if user.get("gender") != "F":
-        raise HTTPException(403, "Cette formule gratuite est réservée aux filles.")
+        raise HTTPException(403, "Cette formule est réservée aux filles.")
 
     with get_db() as conn:
         ev = conn.execute("SELECT * FROM events WHERE id=?", (payload.event_id,)).fetchone()
@@ -485,8 +485,8 @@ def create_free_reservation(payload: schemas.ReservationCreate, user: dict = Dep
         formula = conn.execute("SELECT * FROM formulas WHERE id=?", (payload.formula_id,)).fetchone()
         if not formula:
             raise HTTPException(404, "Formule introuvable.")
-        if formula.get("price_cents", 1) != 0:
-            raise HTTPException(400, "Cette formule n'est pas gratuite.")
+        if not formula.get("is_girls_only"):
+            raise HTTPException(400, "Cette formule n'est pas une formule filles.")
 
         # Paid existante → bloquer
         if conn.execute(

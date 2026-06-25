@@ -79,15 +79,16 @@ def init_db():
         )
         """)
 
-        # FORMULAS — quantity toujours 1 désormais, on garde le champ pour compat
+        # FORMULAS
         cur.execute("""
         CREATE TABLE IF NOT EXISTS formulas (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            name        TEXT NOT NULL,
-            description TEXT,
-            price_cents INTEGER NOT NULL DEFAULT 0,
-            position    INTEGER DEFAULT 0,
-            max_guests  INTEGER DEFAULT 0
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            name           TEXT NOT NULL,
+            description    TEXT,
+            price_cents    INTEGER NOT NULL DEFAULT 0,
+            position       INTEGER DEFAULT 0,
+            max_guests     INTEGER DEFAULT 0,
+            is_girls_only  INTEGER DEFAULT 0
         )
         """)
 
@@ -204,4 +205,9 @@ def _migrate(cur):
     # event_images : ajout media_type
     ei_cols = {r["name"] for r in cur.execute("PRAGMA table_info(event_images)").fetchall()}
     if "media_type" not in ei_cols:
-        cur.execute("ALTER TABLE event_images ADD COLUMN media_type TEXT NOT NULL DEFAULT 'image'")
+        cur.execute("ALTER TABLE event_images ADD COLUMN media_type TEXT DEFAULT 'image'")
+
+    # formulas : ajout is_girls_only
+    f_cols2 = {r["name"] for r in cur.execute("PRAGMA table_info(formulas)").fetchall()}
+    if "is_girls_only" not in f_cols2:
+        cur.execute("ALTER TABLE formulas ADD COLUMN is_girls_only INTEGER DEFAULT 0")
