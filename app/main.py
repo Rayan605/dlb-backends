@@ -24,7 +24,8 @@ from .auth import (
 )
 
 # ─── CONFIG ───────────────────────────────────────────────
-UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", Path(__file__).parent.parent / "uploads"))
+# Azure App Service : /home est le seul volume persistant (comme la DB)
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "/home/uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 ALLOWED_IMG   = {".jpg", ".jpeg", ".png", ".webp", ".avif"}
 ALLOWED_VIDEO = {".mp4", ".mov", ".webm", ".avi"}
