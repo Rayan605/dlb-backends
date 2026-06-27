@@ -12,9 +12,8 @@ from datetime import datetime, timezone
 
 import qrcode
 import stripe
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import urllib.request
+import json as _json
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -50,52 +49,58 @@ BACKEND_PUBLIC_URL = _normalize_url(os.environ.get("BACKEND_PUBLIC_URL", "http:/
 if STRIPE_SECRET:
     stripe.api_key = STRIPE_SECRET
 
-# ─── EMAIL BREVO ──────────────────────────────────────────
-BREVO_SMTP    = "smtp-relay.brevo.com"
-BREVO_PORT    = 587
-BREVO_LOGIN   = "aa4cb3001@smtp-brevo.com"
-BREVO_KEY     = os.environ.get("brevo_key", "")
-NOTIFY_EMAILS = ["mendesagostinho909@gmail.com", "Nkemouss@gmail.com"]
+# ─── EMAIL BREVO (API REST — pas de SMTP, pas de blocage Azure) ───
+BREVO_API_KEY   = os.environ.get("brevo_key", "")
+NOTIFY_EMAILS   = ["mendesagostinho909@gmail.com", "Nkemouss@gmail.com"]
+BREVO_SENDER    = {"name": "Liste Party", "email": "aa4cb3001@smtp-brevo.com"}
 
 
-def _send_reservation_email(user: dict, event: dict, formula: dict, resa_id: int, amount_cents: int, is_free: bool = False):
-    """Envoie une notification email à chaque réservation confirmée."""
-    if not BREVO_KEY:
-        return  # Pas de clé → on passe silencieusement
-
-    price_str = "GRATUIT" if is_free else f"{amount_cents/100:.0f}€"
-    subject = f"[Liste Party] Nouvelle réservation — {event['title']}"
-    body = f"""
-Nouvelle réservation confirmée !
-
-👤 Participant : {user['first_name']} {user['last_name']} ({user['gender']})
-📧 Email       : {user['email']}
-📱 Réseau      : {user.get('social') or '—'}
-
-🎉 Soirée    : {event['title']}
-📅 Date      : {event['date']}
-📍 Lieu      : {event['city']} ({event['department']})
-
-✦ Formule    : {formula['name']}
-💰 Montant   : {price_str}
-🔖 Résa #    : {resa_id}
-    """.strip()
-
+def _send_notification(subject: str, text: str) -> None:
+    """Envoie un email via l API REST Brevo. Non-bloquant si pas de clé."""
+    if not BREVO_API_KEY:
+        print("[EMAIL] brevo_key manquant — email non envoyé")
+        return
+    payload = _json.dumps({
+        "sender":      BREVO_SENDER,
+        "to":          [{"email": e} for e in NOTIFY_EMAILS],
+        "subject":     subject,
+        "textContent": text,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.brevo.com/v3/smtp/email",
+        data=payload,
+        headers={
+            "api-key":      BREVO_API_KEY,
+            "Content-Type": "application/json",
+            "Accept":       "application/json",
+        },
+        method="POST",
+    )
     try:
-        msg = MIMEMultipart()
-        msg["From"]    = BREVO_LOGIN
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain", "utf-8"))
-
-        with smtplib.SMTP(BREVO_SMTP, BREVO_PORT, timeout=8) as smtp:
-            smtp.starttls()
-            smtp.login(BREVO_LOGIN, BREVO_KEY)
-            for dest in NOTIFY_EMAILS:
-                msg["To"] = dest
-                smtp.sendmail(BREVO_LOGIN, dest, msg.as_string())
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            print(f"[EMAIL] Envoyé ({resp.status})")
     except Exception as e:
-        # Non bloquant : l email est best-effort
-        print(f"[EMAIL] Erreur envoi : {e}")
+        print(f"[EMAIL] Erreur : {e}")
+
+
+def _notif_reservation(user: dict, event: dict, formula: dict, resa_id: int, amount_cents: int, is_free: bool = False):
+    price_str = "GRATUIT" if is_free else f"{amount_cents/100:.0f}€"
+    subject = f"[Liste Party] Nouvelle réservation — {event.get('title','')}"
+    text = f"""Nouvelle réservation confirmée !
+
+Participant : {user.get('first_name','')} {user.get('last_name','')} ({user.get('gender','')})
+Email       : {user.get('email','')}
+Réseau      : {user.get('social') or '—'}
+
+Soirée   : {event.get('title','')}
+Date     : {event.get('date','')}
+Lieu     : {event.get('city','')} ({event.get('department','')})
+
+Formule  : {formula.get('name','')}
+Montant  : {price_str}
+Résa #   : {resa_id}
+"""
+    _send_notification(subject, text)
 
 # ─── APP ──────────────────────────────────────────────────
 app = FastAPI(title="Liste Party API", version="3.0.0")
@@ -254,6 +259,7 @@ def _event_extras(conn, event):
     return {
         **event,
         "is_past": bool(event.get("is_past")),
+        "reservations_open": event.get("reservations_open", 1),
         "images":       [_img_out(i) for i in imgs if not i["is_recap"]],
         "recap_images": [_img_out(i) for i in imgs if i["is_recap"]],
         "seats_taken": taken,
@@ -325,6 +331,17 @@ def delete_recap_image(event_id: int, image_id: int, admin: dict = Depends(requi
     return None
 
 
+@app.patch("/events/{event_id}/toggle-reservations", response_model=schemas.EventOut)
+def toggle_reservations(event_id: int, open: bool = True, admin: dict = Depends(require_admin)):
+    """Ouvre ou ferme les réservations pour un event sans le supprimer."""
+    with get_db() as conn:
+        conn.execute("UPDATE events SET reservations_open=? WHERE id=?", (1 if open else 0, event_id))
+        ev = conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+        if not ev:
+            raise HTTPException(404)
+        return _event_extras(conn, ev)
+
+
 @app.patch("/events/{event_id}/mark-past", response_model=schemas.EventOut)
 def mark_past(event_id: int, is_past: bool = True, admin: dict = Depends(require_admin)):
     with get_db() as conn:
@@ -391,8 +408,8 @@ def create_formula(payload: schemas.FormulaCreate, admin: dict = Depends(require
     with get_db() as conn:
         max_pos = conn.execute("SELECT COALESCE(MAX(position), 0) as m FROM formulas").fetchone()["m"]
         cur = conn.execute(
-            "INSERT INTO formulas (name, description, price_cents, max_guests, position, is_girls_only, max_reservations) VALUES (?,?,?,?,?,?,?)",
-            (payload.name.strip(), payload.description, payload.price_cents, payload.max_guests, max_pos + 1, payload.is_girls_only, payload.max_reservations),
+            "INSERT INTO formulas (name, description, price_cents, max_guests, position, is_girls_only) VALUES (?,?,?,?,?,?)",
+            (payload.name.strip(), payload.description, payload.price_cents, payload.max_guests, max_pos + 1, payload.is_girls_only),
         )
         return conn.execute("SELECT * FROM formulas WHERE id=?", (cur.lastrowid,)).fetchone()
 
@@ -403,7 +420,7 @@ def update_formula(formula_id: int, payload: schemas.FormulaUpdate, admin: dict 
         if not conn.execute("SELECT id FROM formulas WHERE id=?", (formula_id,)).fetchone():
             raise HTTPException(404, "Formule introuvable.")
         ups, params = [], []
-        for f in ("name", "description", "price_cents", "max_guests", "is_girls_only", "max_reservations"):
+        for f in ("name", "description", "price_cents", "max_guests", "is_girls_only"):
             v = getattr(payload, f)
             if v is not None:
                 ups.append(f"{f}=?"); params.append(v)
@@ -443,6 +460,8 @@ def create_checkout(payload: schemas.ReservationCreate, user: dict = Depends(get
             raise HTTPException(404, "Soirée introuvable.")
         if ev.get("is_past"):
             raise HTTPException(400, "Cette soirée est terminée, check les prochaines.")
+        if ev.get("reservations_open") == 0:
+            raise HTTPException(409, "Les réservations sont fermées pour cette soirée.")
 
         formula = conn.execute("SELECT * FROM formulas WHERE id=?", (payload.formula_id,)).fetchone()
         if not formula:
@@ -454,16 +473,6 @@ def create_checkout(payload: schemas.ReservationCreate, user: dict = Depends(get
             (user["id"], payload.event_id),
         ).fetchone():
             raise HTTPException(409, "T'as déjà une réservation confirmée pour cette soirée.")
-
-        # Limite de réservations par formule
-        max_resa = formula.get("max_reservations") or 0
-        if max_resa > 0:
-            resa_count = conn.execute(
-                "SELECT COUNT(*) as c FROM reservations WHERE event_id=? AND formula_id=? AND status IN ('paid','pending')",
-                (payload.event_id, payload.formula_id),
-            ).fetchone()["c"]
-            if resa_count >= max_resa:
-                raise HTTPException(409, f"La formule '{formula['name']}' est complète ({max_resa} réservations max).")
 
         # Places dispo : on exclut la pending de cet user (elle sera remplacée)
         taken_others = conn.execute(
@@ -541,6 +550,8 @@ def create_free_reservation(payload: schemas.ReservationCreate, user: dict = Dep
             raise HTTPException(404, "Soirée introuvable.")
         if ev.get("is_past"):
             raise HTTPException(400, "Cette soirée est terminée.")
+        if ev.get("reservations_open") == 0:
+            raise HTTPException(409, "Les réservations sont fermées pour cette soirée.")
 
         formula = conn.execute("SELECT * FROM formulas WHERE id=?", (payload.formula_id,)).fetchone()
         if not formula:
@@ -554,16 +565,6 @@ def create_free_reservation(payload: schemas.ReservationCreate, user: dict = Dep
             (user["id"], payload.event_id),
         ).fetchone():
             raise HTTPException(409, "T'as déjà une réservation confirmée pour cette soirée.")
-
-        # Limite de réservations par formule
-        max_resa_f = formula.get("max_reservations") or 0
-        if max_resa_f > 0:
-            resa_count_f = conn.execute(
-                "SELECT COUNT(*) as c FROM reservations WHERE event_id=? AND formula_id=? AND status IN ('paid','pending')",
-                (payload.event_id, payload.formula_id),
-            ).fetchone()["c"]
-            if resa_count_f >= max_resa_f:
-                raise HTTPException(409, f"La formule '{formula['name']}' est complète ({max_resa_f} réservations max).")
 
         # Places dispo
         taken_others = conn.execute(
@@ -602,13 +603,12 @@ def create_free_reservation(payload: schemas.ReservationCreate, user: dict = Dep
                WHERE r.id=?""",
             (resa_id,),
         ).fetchone()
-
-    # Email best-effort (hors du context manager pour ne pas bloquer)
+    # Email best-effort
     try:
-        _send_reservation_email(user, ev, formula, resa_id, 0, is_free=True)
+        import threading
+        threading.Thread(target=_notif_reservation, args=(user, ev, formula, resa_id, 0), kwargs={"is_free":True}, daemon=True).start()
     except Exception as _e:
-        print(f"[EMAIL] Erreur : {_e}")
-
+        print(f"[EMAIL] prep error: {_e}")
     return res
 
 
@@ -660,17 +660,16 @@ def _confirm_resa(resa_id: int, amount_total, payment_intent):
                WHERE id=?""",
             (amount_total, payment_intent, qr_tok, inv_tok, resa_id),
         )
-
-        # Notification email best-effort
+        # Email notification (best-effort)
         try:
-            res2    = conn.execute("SELECT * FROM reservations WHERE id=?", (resa_id,)).fetchone()
-            user2   = conn.execute("SELECT * FROM users WHERE id=?", (res["user_id"],)).fetchone()
-            event2  = conn.execute("SELECT * FROM events WHERE id=?", (res["event_id"],)).fetchone()
-            formula2= conn.execute("SELECT * FROM formulas WHERE id=?", (res["formula_id"],)).fetchone()
-            if user2 and event2 and formula2:
-                _send_reservation_email(user2, event2, formula2, resa_id, amount_total or 0)
-        except Exception as _e:
-            print(f"[EMAIL] Erreur préparation : {_e}")
+            u2 = conn.execute("SELECT * FROM users WHERE id=?", (res["user_id"],)).fetchone()
+            e2 = conn.execute("SELECT * FROM events WHERE id=?", (res["event_id"],)).fetchone()
+            f2 = conn.execute("SELECT * FROM formulas WHERE id=?", (res["formula_id"],)).fetchone()
+            if u2 and e2 and f2:
+                import threading
+                threading.Thread(target=_notif_reservation, args=(u2, e2, f2, resa_id, amount_total or 0), daemon=True).start()
+        except Exception as _em:
+            print(f"[EMAIL] prep error: {_em}")
 
 
 @app.get("/reservations/me", response_model=List[schemas.ReservationOut])

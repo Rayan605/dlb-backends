@@ -53,8 +53,9 @@ class EventOut(BaseModel):
     city:         str
     department:   str
     max_people:   int
-    is_past:      bool = False
-    images:       List[EventImage] = []
+    is_past:             bool = False
+    reservations_open:   int  = 1
+    images:              List[EventImage] = []
     recap_images: List[EventImage] = []
     seats_taken:  int = 0
     seats_left:   int = 0
@@ -62,32 +63,29 @@ class EventOut(BaseModel):
 
 # -------- FORMULAS --------
 class FormulaOut(BaseModel):
-    id:                 int
-    name:               str
-    description:        Optional[str]
-    price_cents:        int
-    position:           int
-    max_guests:         int = 0
-    is_girls_only:      int = 0
-    max_reservations:   int = 0
+    id:            int
+    name:          str
+    description:   Optional[str]
+    price_cents:   int
+    position:      int
+    max_guests:    int = 0
+    is_girls_only: int = 0
 
 
 class FormulaCreate(BaseModel):
-    name:               str = Field(min_length=1, max_length=120)
-    description:        Optional[str] = Field(default=None, max_length=500)
-    price_cents:        int = Field(ge=0)
-    max_guests:         int = Field(default=0, ge=0)
-    is_girls_only:      int = Field(default=0, ge=0, le=1)
-    max_reservations:   int = Field(default=0, ge=0)
+    name:          str = Field(min_length=1, max_length=120)
+    description:   Optional[str] = Field(default=None, max_length=500)
+    price_cents:   int = Field(ge=0)
+    max_guests:    int = Field(default=0, ge=0)
+    is_girls_only: int = Field(default=0, ge=0, le=1)
 
 
 class FormulaUpdate(BaseModel):
-    name:               Optional[str] = Field(default=None, min_length=1, max_length=120)
-    description:        Optional[str] = Field(default=None, max_length=500)
-    price_cents:        Optional[int] = Field(default=None, ge=0)
-    max_guests:         Optional[int] = Field(default=None, ge=0)
-    is_girls_only:      Optional[int] = Field(default=None, ge=0, le=1)
-    max_reservations:   Optional[int] = Field(default=None, ge=0)
+    name:          Optional[str] = Field(default=None, min_length=1, max_length=120)
+    description:   Optional[str] = Field(default=None, max_length=500)
+    price_cents:   Optional[int] = Field(default=None, ge=0)
+    max_guests:    Optional[int] = Field(default=None, ge=0)
+    is_girls_only: Optional[int] = Field(default=None, ge=0, le=1)
 
 
 # -------- RESERVATIONS --------

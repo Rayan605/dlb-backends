@@ -61,8 +61,9 @@ def init_db():
             city        TEXT NOT NULL,
             department  TEXT NOT NULL,
             max_people  INTEGER NOT NULL,
-            is_past     INTEGER DEFAULT 0,
-            created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+            is_past              INTEGER DEFAULT 0,
+            reservations_open    INTEGER DEFAULT 1,
+            created_at           TEXT DEFAULT CURRENT_TIMESTAMP
         )
         """)
 
@@ -87,9 +88,8 @@ def init_db():
             description    TEXT,
             price_cents    INTEGER NOT NULL DEFAULT 0,
             position       INTEGER DEFAULT 0,
-            max_guests          INTEGER DEFAULT 0,
-            is_girls_only       INTEGER DEFAULT 0,
-            max_reservations    INTEGER DEFAULT 0
+            max_guests     INTEGER DEFAULT 0,
+            is_girls_only  INTEGER DEFAULT 0
         )
         """)
 
@@ -187,6 +187,8 @@ def _migrate(cur):
     ev_cols = {r["name"] for r in cur.execute("PRAGMA table_info(events)").fetchall()}
     if "is_past" not in ev_cols:
         cur.execute("ALTER TABLE events ADD COLUMN is_past INTEGER DEFAULT 0")
+    if "reservations_open" not in ev_cols:
+        cur.execute("ALTER TABLE events ADD COLUMN reservations_open INTEGER DEFAULT 1")
 
     # event_images
     img_cols = {r["name"] for r in cur.execute("PRAGMA table_info(event_images)").fetchall()}
@@ -212,7 +214,3 @@ def _migrate(cur):
     f_cols2 = {r["name"] for r in cur.execute("PRAGMA table_info(formulas)").fetchall()}
     if "is_girls_only" not in f_cols2:
         cur.execute("ALTER TABLE formulas ADD COLUMN is_girls_only INTEGER DEFAULT 0")
-
-    # formulas : ajout max_reservations
-    if "max_reservations" not in f_cols2:
-        cur.execute("ALTER TABLE formulas ADD COLUMN max_reservations INTEGER DEFAULT 0")
