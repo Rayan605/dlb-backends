@@ -81,11 +81,12 @@ class FormulaCreate(BaseModel):
 
 
 class FormulaUpdate(BaseModel):
-    name:          Optional[str] = Field(default=None, min_length=1, max_length=120)
-    description:   Optional[str] = Field(default=None, max_length=500)
-    price_cents:   Optional[int] = Field(default=None, ge=0)
-    max_guests:    Optional[int] = Field(default=None, ge=0)
-    is_girls_only: Optional[int] = Field(default=None, ge=0, le=1)
+    name:               Optional[str] = Field(default=None, min_length=1, max_length=120)
+    description:        Optional[str] = Field(default=None, max_length=500)
+    price_cents:        Optional[int] = Field(default=None, ge=0)
+    max_guests:         Optional[int] = Field(default=None, ge=0)
+    is_girls_only:      Optional[int] = Field(default=None, ge=0, le=1)
+    max_reservations:   Optional[int] = Field(default=None, ge=0)
 
 
 # -------- RESERVATIONS --------
