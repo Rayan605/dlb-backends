@@ -420,7 +420,7 @@ def update_formula(formula_id: int, payload: schemas.FormulaUpdate, admin: dict 
         if not conn.execute("SELECT id FROM formulas WHERE id=?", (formula_id,)).fetchone():
             raise HTTPException(404, "Formule introuvable.")
         ups, params = [], []
-        for f in ("name", "description", "price_cents", "max_guests", "is_girls_only"):
+        for f in ("name", "description", "price_cents", "max_guests", "is_girls_only", "max_reservations"):
             v = getattr(payload, f)
             if v is not None:
                 ups.append(f"{f}=?"); params.append(v)
@@ -443,6 +443,29 @@ def delete_formula(formula_id: int, admin: dict = Depends(require_admin)):
             raise HTTPException(409, f"Impossible de supprimer : {used} réservation(s) active(s) utilisent cette formule.")
         conn.execute("DELETE FROM formulas WHERE id=?", (formula_id,))
     return None
+
+
+@app.get("/events/{event_id}/formula-availability")
+def public_formula_availability(event_id: int):
+    """Places restantes par formule pour un event — public, utilisé sur la page de réservation."""
+    with get_db() as conn:
+        ev = conn.execute("SELECT id FROM events WHERE id=?", (event_id,)).fetchone()
+        if not ev:
+            raise HTTPException(404, "Soirée introuvable.")
+        formulas = conn.execute("SELECT * FROM formulas ORDER BY position").fetchall()
+        result = {}
+        for f in formulas:
+            count = conn.execute(
+                "SELECT COUNT(*) as c FROM reservations WHERE event_id=? AND formula_id=? AND status IN ('paid','pending')",
+                (event_id, f["id"])
+            ).fetchone()["c"]
+            max_r = f["max_reservations"] or 0
+            result[str(f["id"])] = {
+                "reservations_count": count,
+                "spots_left": max(0, max_r - count) if max_r > 0 else None,
+                "max_reservations": max_r,
+            }
+        return result
 
 
 # ─── RESERVATIONS ─────────────────────────────────────────
