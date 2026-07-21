@@ -253,7 +253,7 @@ def _event_extras(conn, event):
         (event["id"],),
     ).fetchall()
     taken = (conn.execute(
-        "SELECT COALESCE(SUM(quantity),0) as t FROM reservations WHERE event_id=? AND status IN ('paid','pending')",
+        "SELECT COALESCE(SUM(quantity),0) as t FROM reservations WHERE event_id=? AND status='paid'",
         (event["id"],),
     ).fetchone()["t"] or 0)
     return {
@@ -511,7 +511,7 @@ def public_formula_availability(event_id: int):
         result = {}
         for f in formulas:
             count = conn.execute(
-                "SELECT COUNT(*) as c FROM reservations WHERE event_id=? AND formula_id=? AND status IN ('paid','pending')",
+                "SELECT COUNT(*) as c FROM reservations WHERE event_id=? AND formula_id=? AND status='paid'",
                 (event_id, f["id"])
             ).fetchone()["c"]
             max_r = f["max_reservations"] or 0
