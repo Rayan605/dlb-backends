@@ -331,6 +331,61 @@ def delete_recap_image(event_id: int, image_id: int, admin: dict = Depends(requi
     return None
 
 
+@app.patch("/events/{event_id}", response_model=schemas.EventOut)
+async def update_event(
+    event_id:    int,
+    title:       Optional[str] = Form(default=None),
+    description: Optional[str] = Form(default=None),
+    date:        Optional[str] = Form(default=None),
+    city:        Optional[str] = Form(default=None),
+    department:  Optional[str] = Form(default=None),
+    max_people:  Optional[int] = Form(default=None),
+    images:      List[UploadFile] = File(default=[]),
+    delete_image_ids: Optional[str] = Form(default=None),
+    admin: dict = Depends(require_admin),
+):
+    """Edite un evenement existant. N envoyer que les champs a modifier."""
+    with get_db() as conn:
+        ev = conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+        if not ev:
+            raise HTTPException(404, "Soiree introuvable.")
+
+        updates, params = [], []
+        if title       is not None: updates.append("title=?");       params.append(title.strip())
+        if description is not None: updates.append("description=?"); params.append(description)
+        if city        is not None: updates.append("city=?");        params.append(city.strip())
+        if department  is not None: updates.append("department=?");  params.append(department.strip())
+        if max_people  is not None: updates.append("max_people=?");  params.append(max_people)
+        if date is not None:
+            try:
+                datetime.fromisoformat(date.replace("Z", "+00:00"))
+            except ValueError:
+                raise HTTPException(400, "Date invalide (ISO 8601).")
+            updates.append("date=?"); params.append(date)
+
+        if updates:
+            params.append(event_id)
+            conn.execute(f"UPDATE events SET {', '.join(updates)} WHERE id=?", params)
+
+        if delete_image_ids:
+            for iid in delete_image_ids.split(","):
+                iid = iid.strip()
+                if not iid.isdigit(): continue
+                img = conn.execute(
+                    "SELECT filename FROM event_images WHERE id=? AND event_id=? AND is_recap=0",
+                    (int(iid), event_id)
+                ).fetchone()
+                if img:
+                    conn.execute("DELETE FROM event_images WHERE id=?", (int(iid),))
+                    try: (UPLOAD_DIR / img["filename"]).unlink(missing_ok=True)
+                    except Exception: pass
+
+        if images:
+            await _save_imgs(conn, event_id, images, False)
+
+        return _event_extras(conn, conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone())
+
+
 @app.patch("/events/{event_id}/toggle-reservations", response_model=schemas.EventOut)
 def toggle_reservations(event_id: int, open: bool = True, admin: dict = Depends(require_admin)):
     """Ouvre ou ferme les réservations pour un event sans le supprimer."""
