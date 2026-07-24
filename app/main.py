@@ -59,7 +59,7 @@ SMTP_HOST     = "smtp-relay.brevo.com"
 SMTP_PORT     = 587
 SMTP_LOGIN    = "aa4cb3001@smtp-brevo.com"
 BREVO_API_KEY = os.environ.get("brevo_key", "")  # sert de clé/mot de passe SMTP
-NOTIFY_EMAILS = ["mendesagostinho909@gmail.com", "Nkemouss@gmail.com"]
+NOTIFY_EMAILS = ["mendesagostinho909@gmail.com", "Nkemouss@gmail.com","caziza.caziz@gmail.com"]
 SENDER_NAME   = "Liste Party"
 SENDER_EMAIL  = "noreply@laflemme.app"
 
