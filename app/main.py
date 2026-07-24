@@ -182,6 +182,29 @@ def me(user: dict = Depends(get_current_user)):
     return _user_out(user)
 
 
+@app.delete("/auth/me", status_code=204)
+def delete_my_account(user: dict = Depends(get_current_user)):
+    """Suppression définitive du compte et des données associées
+    (exigence Apple App Store 5.1.1(v) — account deletion)."""
+    with get_db() as conn:
+        # Invitations reçues par l'utilisateur en tant qu'invité
+        conn.execute("DELETE FROM guest_reservations WHERE guest_user_id=?", (user["id"],))
+
+        # Invitations envoyées par l'utilisateur en tant qu'hôte (ses résas)
+        hosted = conn.execute(
+            "SELECT id FROM reservations WHERE user_id=?", (user["id"],)
+        ).fetchall()
+        for r in hosted:
+            conn.execute("DELETE FROM guest_reservations WHERE reservation_id=?", (r["id"],))
+
+        # Réservations de l'utilisateur
+        conn.execute("DELETE FROM reservations WHERE user_id=?", (user["id"],))
+
+        # Compte
+        conn.execute("DELETE FROM users WHERE id=?", (user["id"],))
+    return None
+
+
 def _user_out(u):
     return {
         "id": u["id"], "email": u["email"],
