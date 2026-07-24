@@ -64,16 +64,20 @@ SENDER_NAME   = "Liste Party"
 SENDER_EMAIL  = "noreply@laflemme.app"
 
 
-def _send_notification(subject: str, text: str) -> None:
-    """Envoie un email via SMTP Brevo. Non-bloquant si pas de clé."""
+def _send_notification(subject: str, text: str, recipients: list = None) -> None:
+    """Envoie un email via SMTP Brevo. Non-bloquant si pas de clé.
+    Si `recipients` est fourni, envoie uniquement à ces adresses ;
+    sinon utilise NOTIFY_EMAILS par défaut."""
     if not BREVO_API_KEY:
         print("[EMAIL] brevo_key manquant — email non envoyé")
         return
 
+    to_list = recipients if recipients else NOTIFY_EMAILS
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = f"{SENDER_NAME} <{SENDER_EMAIL}>"
-    msg["To"] = ", ".join(NOTIFY_EMAILS)
+    msg["To"] = ", ".join(to_list)
     msg.attach(MIMEText(text, "plain"))
 
     try:
@@ -83,8 +87,8 @@ def _send_notification(subject: str, text: str) -> None:
             server.starttls(context=context)
             server.ehlo()
             server.login(SMTP_LOGIN, BREVO_API_KEY)
-            server.sendmail(SENDER_EMAIL, NOTIFY_EMAILS, msg.as_string())
-        print("[EMAIL] Envoyé via SMTP")
+            server.sendmail(SENDER_EMAIL, to_list, msg.as_string())
+        print(f"[EMAIL] Envoyé via SMTP à {to_list}")
     except Exception as e:
         print(f"[EMAIL] Erreur : {e}")
 
@@ -138,16 +142,17 @@ def health():
 
 
 @app.post("/admin/test-email")
-def test_email(admin: dict = Depends(require_admin)):
-    """Envoie un email de test via SMTP Brevo, pour diagnostiquer la config
-    sans toucher au frontend. Appel : POST /admin/test-email avec un Bearer
-    token admin (ex: via curl ou Postman)."""
+def test_email(payload: schemas.TestEmailIn, admin: dict = Depends(require_admin)):
+    """Envoie un email de test via SMTP Brevo à UNE adresse précise fournie
+    dans le body, pour diagnostiquer la config sans toucher au frontend.
+    Appel : POST /admin/test-email {"email": "..."} avec un Bearer token admin."""
     _send_notification(
         "[Liste Party] Email de test",
         f"Ceci est un email de test déclenché manuellement par "
         f"{admin.get('email', '?')} via /admin/test-email.",
+        recipients=[payload.email],
     )
-    return {"ok": True, "message": "Tentative d'envoi effectuée — vérifie les logs et ta boîte mail."}
+    return {"ok": True, "message": f"Tentative d'envoi effectuée vers {payload.email} — vérifie les logs et la boîte mail."}
 
 
 # ─── PERMISSIONS ──────────────────────────────────────────

@@ -35,6 +35,11 @@ class Token(BaseModel):
     user:         UserOut
 
 
+# -------- ADMIN UTILS --------
+class TestEmailIn(BaseModel):
+    email: EmailStr
+
+
 # -------- EVENTS --------
 class EventImage(BaseModel):
     id:         int
