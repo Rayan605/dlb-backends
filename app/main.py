@@ -49,36 +49,42 @@ BACKEND_PUBLIC_URL = _normalize_url(os.environ.get("BACKEND_PUBLIC_URL", "http:/
 if STRIPE_SECRET:
     stripe.api_key = STRIPE_SECRET
 
-# ─── EMAIL BREVO (API REST — pas de SMTP, pas de blocage Azure) ───
-BREVO_API_KEY   = os.environ.get("brevo_key", "")
-NOTIFY_EMAILS   = ["mendesagostinho909@gmail.com", "Nkemouss@gmail.com"]
-BREVO_SENDER    = {"name": "Liste Party", "email": "aa4cb3001@smtp-brevo.com"}
+# ─── EMAIL BREVO (SMTP — login fixe + brevo_key comme clé) ───
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+SMTP_HOST     = "smtp-relay.brevo.com"
+SMTP_PORT     = 587
+SMTP_LOGIN    = "aa4cb3001@smtp-brevo.com"
+BREVO_API_KEY = os.environ.get("brevo_key", "")  # sert de clé/mot de passe SMTP
+NOTIFY_EMAILS = ["mendesagostinho909@gmail.com", "Nkemouss@gmail.com"]
+SENDER_NAME   = "Liste Party"
+SENDER_EMAIL  = "noreply@laflemme.app"
 
 
 def _send_notification(subject: str, text: str) -> None:
-    """Envoie un email via l API REST Brevo. Non-bloquant si pas de clé."""
+    """Envoie un email via SMTP Brevo. Non-bloquant si pas de clé."""
     if not BREVO_API_KEY:
         print("[EMAIL] brevo_key manquant — email non envoyé")
         return
-    payload = _json.dumps({
-        "sender":      BREVO_SENDER,
-        "to":          [{"email": e} for e in NOTIFY_EMAILS],
-        "subject":     subject,
-        "textContent": text,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.brevo.com/v3/smtp/email",
-        data=payload,
-        headers={
-            "api-key":      BREVO_API_KEY,
-            "Content-Type": "application/json",
-            "Accept":       "application/json",
-        },
-        method="POST",
-    )
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = f"{SENDER_NAME} <{SENDER_EMAIL}>"
+    msg["To"] = ", ".join(NOTIFY_EMAILS)
+    msg.attach(MIMEText(text, "plain"))
+
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            print(f"[EMAIL] Envoyé ({resp.status})")
+        context = ssl.create_default_context()
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+            server.ehlo()
+            server.starttls(context=context)
+            server.ehlo()
+            server.login(SMTP_LOGIN, BREVO_API_KEY)
+            server.sendmail(SENDER_EMAIL, NOTIFY_EMAILS, msg.as_string())
+        print("[EMAIL] Envoyé via SMTP")
     except Exception as e:
         print(f"[EMAIL] Erreur : {e}")
 
@@ -129,6 +135,19 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+
+@app.post("/admin/test-email")
+def test_email(admin: dict = Depends(require_admin)):
+    """Envoie un email de test via SMTP Brevo, pour diagnostiquer la config
+    sans toucher au frontend. Appel : POST /admin/test-email avec un Bearer
+    token admin (ex: via curl ou Postman)."""
+    _send_notification(
+        "[Liste Party] Email de test",
+        f"Ceci est un email de test déclenché manuellement par "
+        f"{admin.get('email', '?')} via /admin/test-email.",
+    )
+    return {"ok": True, "message": "Tentative d'envoi effectuée — vérifie les logs et ta boîte mail."}
 
 
 # ─── PERMISSIONS ──────────────────────────────────────────
