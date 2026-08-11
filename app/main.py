@@ -684,9 +684,32 @@ def _formulas_for_event(conn, event_id: int) -> list:
 
 
 @app.get("/formulas", response_model=List[schemas.FormulaOut])
-def list_formulas(event_id: Optional[int] = None):
+def list_formulas(request: Request, event_id: Optional[int] = None,
+                  user: dict = Depends(_optional_user)):
     """Sans event_id : toutes les formules (usage admin).
-    Avec event_id : uniquement celles attribuées à cette soirée."""
+    Avec event_id : uniquement celles attribuées à cette soirée.
+
+    Cas particulier temporaire : si l'appel vient de l'app mobile (client
+    Dart), on renvoie soit les formules filles (compte F), soit une formule
+    pseudo non réservable renvoyant vers le site. Tout autre client reçoit
+    les formules normales."""
+    if _is_mobile_app(request):
+        gender = (user or {}).get("gender")
+        with get_db() as conn:
+            if event_id is not None:
+                rows = _formulas_for_event(conn, event_id)
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM formulas ORDER BY position ASC, id ASC"
+                ).fetchall()
+            if gender == "F":
+                girls = [dict(f) for f in rows if f["is_girls_only"]]
+                for d in girls:
+                    d["event_ids"] = _formula_event_ids(conn, d["id"])
+                return girls
+            return [_mobile_pseudo_formula()]
+
+    # Comportement normal (site web, admin, tout client non-Dart)
     with get_db() as conn:
         if event_id is not None:
             ev = conn.execute("SELECT id FROM events WHERE id=?", (event_id,)).fetchone()
@@ -719,6 +742,38 @@ def _assert_formula_on_event(conn, formula_id: int, event_id: int) -> None:
     ).fetchone()
     if not ok:
         raise HTTPException(400, "Cette formule n'est pas disponible pour cette soirée.")
+
+
+# ── Vue "app mobile" temporaire ───────────────────────────
+# Le build iOS en review appelle GET /formulas SANS event_id et ne sait pas
+# filtrer par soirée. En attendant sa mise à jour, on lui renvoie :
+#   - compte fille (gender='F')  -> uniquement les formules filles
+#   - tout autre cas             -> une formule "pseudo" (id négatif) qui
+#                                   renvoie vers le site, non réservable.
+# Tout client NON-Dart (site web, admin, curl...) reçoit les formules
+# normales — c'est le comportement par défaut.
+MOBILE_PSEUDO_FORMULA_ID = -1
+
+
+def _is_mobile_app(request) -> bool:
+    """True si la requête vient de l'app Flutter (client HTTP Dart)."""
+    ua = (request.headers.get("user-agent") or "")
+    return "dart" in ua.lower()
+
+
+def _mobile_pseudo_formula() -> dict:
+    return {
+        "id": MOBILE_PSEUDO_FORMULA_ID,
+        "name": "Formules mecs — sur le site",
+        "description": ("Les formules mecs se réservent sur listeparty.com. "
+                        "Rends-toi sur le site pour choisir ta formule et "
+                        "payer ta place."),
+        "price_cents": 0,
+        "position": 999,
+        "max_guests": 0,
+        "is_girls_only": 0,
+        "event_ids": [],
+    }
 
 
 @app.put("/formulas/{formula_id}/events", response_model=schemas.FormulaOut)
@@ -831,6 +886,8 @@ def create_checkout(payload: schemas.ReservationCreate, user: dict = Depends(get
         if ev.get("reservations_open") == 0:
             raise HTTPException(409, "Les réservations sont fermées pour cette soirée.")
 
+        if payload.formula_id == MOBILE_PSEUDO_FORMULA_ID:
+            raise HTTPException(400, "Cette formule se réserve sur listeparty.com — rends-toi sur le site pour payer ta place.")
         formula = conn.execute("SELECT * FROM formulas WHERE id=?", (payload.formula_id,)).fetchone()
         if not formula:
             raise HTTPException(404, "Formule introuvable.")
@@ -922,6 +979,8 @@ def create_free_reservation(payload: schemas.ReservationCreate, user: dict = Dep
         if ev.get("reservations_open") == 0:
             raise HTTPException(409, "Les réservations sont fermées pour cette soirée.")
 
+        if payload.formula_id == MOBILE_PSEUDO_FORMULA_ID:
+            raise HTTPException(400, "Cette formule se réserve sur listeparty.com — rends-toi sur le site pour payer ta place.")
         formula = conn.execute("SELECT * FROM formulas WHERE id=?", (payload.formula_id,)).fetchone()
         if not formula:
             raise HTTPException(404, "Formule introuvable.")
