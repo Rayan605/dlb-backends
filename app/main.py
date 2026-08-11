@@ -112,6 +112,68 @@ Résa #   : {resa_id}
 """
     _send_notification(subject, text)
 
+
+# ─── PUSH — AZURE NOTIFICATION HUBS (APNs) ────────────────
+# Découplé : tant que la connection string n'est pas définie, aucun push
+# n'est envoyé mais rien ne casse. Aucune modif de code nécessaire une fois
+# le Hub créé — il suffira de renseigner ces 2 variables d'environnement.
+import hmac
+import hashlib
+import base64 as _b64
+import time as _time
+import urllib.parse as _urlparse
+
+ANH_CONNECTION_STRING = os.environ.get("AZURE_NOTIFICATION_HUB_CONNECTION_STRING", "")
+ANH_HUB_NAME          = os.environ.get("AZURE_NOTIFICATION_HUB_NAME", "")
+
+
+def _anh_parse_connection_string(cs: str):
+    """Extrait endpoint, keyName, key d'une connection string Azure NH."""
+    parts = dict(p.split("=", 1) for p in cs.split(";") if "=" in p)
+    endpoint = parts.get("Endpoint", "").replace("sb://", "https://")
+    return endpoint, parts.get("SharedAccessKeyName", ""), parts.get("SharedAccessKey", "")
+
+
+def _anh_sas_token(uri: str, key_name: str, key: str) -> str:
+    """Génère un token SAS pour authentifier l'appel REST au Hub."""
+    target = _urlparse.quote(uri.lower(), safe="").lower()
+    expiry = str(int(_time.time()) + 3600)
+    to_sign = target + "\n" + expiry
+    signature = _urlparse.quote(
+        _b64.b64encode(
+            hmac.new(key.encode("utf-8"), to_sign.encode("utf-8"), hashlib.sha256).digest()
+        ),
+        safe="",
+    )
+    return (f"SharedAccessSignature sr={target}&sig={signature}"
+            f"&se={expiry}&skn={key_name}")
+
+
+def _push_apns(title: str, body: str, event_id=None) -> None:
+    """Envoie une notification à TOUS les appareils iOS enregistrés sur le Hub,
+    via un broadcast APNs. Non-bloquant : log + return si non configuré."""
+    if not ANH_CONNECTION_STRING or not ANH_HUB_NAME:
+        print("[PUSH] Azure NH non configuré — push ignoré (feed app OK)")
+        return
+    try:
+        endpoint, key_name, key = _anh_parse_connection_string(ANH_CONNECTION_STRING)
+        endpoint = endpoint.rstrip("/")
+        url = f"{endpoint}/{ANH_HUB_NAME}/messages/?api-version=2015-01"
+
+        aps = {"aps": {"alert": {"title": title, "body": body}, "sound": "default"}}
+        if event_id is not None:
+            aps["event_id"] = event_id
+        payload = _json.dumps(aps).encode("utf-8")
+
+        req = urllib.request.Request(url, data=payload, method="POST")
+        req.add_header("Authorization", _anh_sas_token(url, key_name, key))
+        req.add_header("Content-Type", "application/json;charset=utf-8")
+        req.add_header("ServiceBusNotification-Format", "apple")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            print(f"[PUSH] Envoyé via Azure NH ({resp.status})")
+    except Exception as e:
+        print(f"[PUSH] Erreur : {e}")
+
 # ─── APP ──────────────────────────────────────────────────
 app = FastAPI(title="Liste Party API", version="3.0.0")
 
@@ -153,6 +215,104 @@ def test_email(payload: schemas.TestEmailIn, admin: dict = Depends(require_admin
         recipients=[payload.email],
     )
     return {"ok": True, "message": f"Tentative d'envoi effectuée vers {payload.email} — vérifie les logs et la boîte mail."}
+
+
+# ─── NOTIFICATIONS ────────────────────────────────────────
+@app.get("/notifications", response_model=List[schemas.NotificationOut])
+def list_notifications(limit: int = 50):
+    """Feed public des dernières annonces (consommé par l'app mobile)."""
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT id, title, body, event_id, created_at "
+            "FROM notifications ORDER BY id DESC LIMIT ?",
+            (max(1, min(limit, 100)),),
+        ).fetchall()
+
+
+@app.post("/admin/notifications", response_model=schemas.NotificationOut, status_code=201)
+def create_notification(payload: schemas.NotificationCreate,
+                        admin: dict = Depends(require_admin)):
+    """Crée une annonce depuis l'admin : l'insère (feed app) ET envoie le push
+    APNs à tous les appareils via Azure Notification Hubs."""
+    with get_db() as conn:
+        if payload.event_id is not None:
+            ev = conn.execute("SELECT id FROM events WHERE id=?",
+                              (payload.event_id,)).fetchone()
+            if not ev:
+                raise HTTPException(404, "Soirée introuvable.")
+        cur = conn.execute(
+            "INSERT INTO notifications (title, body, event_id) VALUES (?,?,?)",
+            (payload.title.strip(), payload.body.strip(), payload.event_id),
+        )
+        row = conn.execute(
+            "SELECT id, title, body, event_id, created_at FROM notifications WHERE id=?",
+            (cur.lastrowid,),
+        ).fetchone()
+
+    # Push (non-bloquant si Azure NH pas encore configuré)
+    _push_apns(row["title"], row["body"], event_id=row["event_id"])
+    return row
+
+
+@app.delete("/admin/notifications/{notif_id}", status_code=204)
+def delete_notification(notif_id: int, admin: dict = Depends(require_admin)):
+    with get_db() as conn:
+        conn.execute("DELETE FROM notifications WHERE id=?", (notif_id,))
+    return None
+
+
+# ─── DEVICE TOKENS (push) ─────────────────────────────────
+from .auth import oauth2_scheme, SECRET_KEY, ALGORITHM
+from jose import jwt as _jwt, JWTError as _JWTError
+
+
+def _optional_user(token=Depends(oauth2_scheme)):
+    """Renvoie l'utilisateur si un token valide est fourni, sinon None.
+    Ne lève jamais 401 — utilisé pour l'enregistrement device anonyme."""
+    if not token:
+        return None
+    try:
+        payload = _jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        uid = payload.get("sub")
+        if uid is None:
+            return None
+        with get_db() as conn:
+            return conn.execute("SELECT * FROM users WHERE id=?", (int(uid),)).fetchone()
+    except (_JWTError, ValueError):
+        return None
+
+
+@app.post("/devices/register", status_code=204)
+def register_device(payload: schemas.DeviceRegisterIn,
+                    user: dict = Depends(_optional_user)):
+    """L'app mobile enregistre son token APNs ici. Lié à l'utilisateur si
+    connecté (sinon anonyme). Upsert : un même token n'est stocké qu'une fois."""
+    uid = user["id"] if user else None
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT id FROM device_tokens WHERE device_token=?",
+            (payload.device_token,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE device_tokens SET platform=?, user_id=COALESCE(?, user_id), updated_at=? WHERE id=?",
+                (payload.platform, uid, now, existing["id"]),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO device_tokens (device_token, platform, user_id, updated_at) "
+                "VALUES (?,?,?,?)",
+                (payload.device_token, payload.platform, uid, now),
+            )
+    return None
+
+
+@app.post("/admin/test-push", status_code=200)
+def test_push(admin: dict = Depends(require_admin)):
+    """Déclenche un push de test vers tous les appareils enregistrés."""
+    _push_apns("Liste Party", "Ceci est une notification de test 🎉")
+    return {"ok": True, "message": "Push de test envoyé (vérifie les logs et ton appareil)."}
 
 
 # ─── PERMISSIONS ──────────────────────────────────────────

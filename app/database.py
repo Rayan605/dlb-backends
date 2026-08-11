@@ -141,6 +141,33 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_guest_resa  ON guest_reservations(reservation_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_guest_qr    ON guest_reservations(qr_token)")
 
+        # NOTIFICATIONS — annonces poussées depuis l'admin (feed app + push)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS notifications (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            title      TEXT NOT NULL,
+            body       TEXT NOT NULL,
+            event_id   INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE SET NULL
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_notif_created ON notifications(id DESC)")
+
+        # DEVICE TOKENS — tokens push (APNs/FCM) enregistrés par l'app mobile
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS device_tokens (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_token TEXT UNIQUE NOT NULL,
+            platform     TEXT NOT NULL DEFAULT 'apns',
+            user_id      INTEGER,
+            created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_devtok_token ON device_tokens(device_token)")
+
         _migrate(cur)
 
         # Seed formules réelles

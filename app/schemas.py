@@ -40,6 +40,26 @@ class TestEmailIn(BaseModel):
     email: EmailStr
 
 
+# -------- NOTIFICATIONS --------
+class NotificationOut(BaseModel):
+    id:         int
+    title:      str
+    body:       str
+    event_id:   Optional[int] = None
+    created_at: Optional[str] = None
+
+
+class NotificationCreate(BaseModel):
+    title:    str = Field(min_length=1, max_length=120)
+    body:     str = Field(min_length=1, max_length=500)
+    event_id: Optional[int] = None
+
+
+class DeviceRegisterIn(BaseModel):
+    device_token: str = Field(min_length=1, max_length=400)
+    platform:     str = Field(default="apns", pattern="^(apns|fcm)$")
+
+
 # -------- EVENTS --------
 class EventImage(BaseModel):
     id:         int
