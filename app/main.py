@@ -427,34 +427,74 @@ def toggle_admin(user_id: int, is_admin: bool, admin: dict = Depends(require_adm
     return {"ok": True}
 
 
+# ── Vue "app mobile" temporaire ───────────────────────────
+# Le build iOS en review appelle GET /formulas SANS event_id et ne sait pas
+# filtrer par soirée. En attendant sa mise à jour, on lui renvoie :
+#   - compte fille (gender='F')  -> uniquement les formules filles
+#   - tout autre cas             -> une formule "pseudo" (id négatif) qui
+#                                   renvoie vers le site, non réservable.
+# Tout client NON-Dart (site web, admin, curl...) reçoit les formules
+# normales — c'est le comportement par défaut.
+MOBILE_PSEUDO_FORMULA_ID = -1
+
+
+def _is_mobile_app(request) -> bool:
+    """True si la requête vient de l'app Flutter (client HTTP Dart)."""
+    ua = (request.headers.get("user-agent") or "")
+    return "dart" in ua.lower()
+
+
+def _mobile_pseudo_formula() -> dict:
+    return {
+        "id": MOBILE_PSEUDO_FORMULA_ID,
+        "name": "Formules mecs — sur le site",
+        "description": ("Les formules mecs se réservent sur listeparty.com. "
+                        "Rends-toi sur le site pour choisir ta formule et "
+                        "payer ta place."),
+        "price_cents": 0,
+        "position": 999,
+        "max_guests": 0,
+        "is_girls_only": 0,
+        "event_ids": [],
+    }
+
+
 # ─── EVENTS ───────────────────────────────────────────────
 @app.get("/events", response_model=List[schemas.EventOut])
-def list_events(upcoming_only: bool = True):
+def list_events(request: Request, upcoming_only: bool = True):
+    mobile = _is_mobile_app(request)
     with get_db() as conn:
         if upcoming_only:
             rows = conn.execute("SELECT * FROM events WHERE is_past=0 ORDER BY date ASC").fetchall()
         else:
             rows = conn.execute("SELECT * FROM events ORDER BY date DESC").fetchall()
-        return [_event_extras(conn, e) for e in rows]
+        return [_event_extras(conn, e, mobile) for e in rows]
 
 
 @app.get("/events/past", response_model=List[schemas.EventOut])
-def list_past_events():
+def list_past_events(request: Request):
+    mobile = _is_mobile_app(request)
     with get_db() as conn:
         rows = conn.execute("SELECT * FROM events WHERE is_past=1 ORDER BY date DESC").fetchall()
-        return [_event_extras(conn, e) for e in rows]
+        return [_event_extras(conn, e, mobile) for e in rows]
 
 
 @app.get("/events/{event_id}", response_model=schemas.EventOut)
-def get_event(event_id: int):
+def get_event(event_id: int, request: Request):
+    mobile = _is_mobile_app(request)
     with get_db() as conn:
         ev = conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
         if not ev:
             raise HTTPException(404, "Soirée introuvable.")
-        return _event_extras(conn, ev)
+        return _event_extras(conn, ev, mobile)
 
 
-def _event_extras(conn, event):
+def _event_extras(conn, event, mobile: bool = False):
+    """[mobile=True] Masque la jauge réelle pour l'app en review : on renvoie
+    le vrai max_people mais 80% de places prises (donc 20% restantes), quelle
+    que soit la réalité. seats_left est garanti >= 1 pour ne jamais déclencher
+    'complet' côté app (ce qui désactiverait le bouton Réserver).
+    Tout autre client reçoit les vraies valeurs."""
     imgs = conn.execute(
         "SELECT id,filename,position,is_recap,media_type FROM event_images WHERE event_id=? ORDER BY position ASC",
         (event["id"],),
@@ -463,14 +503,23 @@ def _event_extras(conn, event):
         "SELECT COALESCE(SUM(quantity),0) as t FROM reservations WHERE event_id=? AND status='paid'",
         (event["id"],),
     ).fetchone()["t"] or 0)
+
+    max_people = event["max_people"] or 0
+    if mobile:
+        seats_left  = max(1, round(max_people * 0.20))
+        seats_taken = max(0, max_people - seats_left)
+    else:
+        seats_taken = taken
+        seats_left  = max(0, max_people - taken)
+
     return {
         **event,
         "is_past": bool(event.get("is_past")),
         "reservations_open": event.get("reservations_open", 1),
         "images":       [_img_out(i) for i in imgs if not i["is_recap"]],
         "recap_images": [_img_out(i) for i in imgs if i["is_recap"]],
-        "seats_taken": taken,
-        "seats_left": max(0, event["max_people"] - taken),
+        "seats_taken": seats_taken,
+        "seats_left": seats_left,
     }
 
 def _img_out(img):
@@ -744,36 +793,6 @@ def _assert_formula_on_event(conn, formula_id: int, event_id: int) -> None:
         raise HTTPException(400, "Cette formule n'est pas disponible pour cette soirée.")
 
 
-# ── Vue "app mobile" temporaire ───────────────────────────
-# Le build iOS en review appelle GET /formulas SANS event_id et ne sait pas
-# filtrer par soirée. En attendant sa mise à jour, on lui renvoie :
-#   - compte fille (gender='F')  -> uniquement les formules filles
-#   - tout autre cas             -> une formule "pseudo" (id négatif) qui
-#                                   renvoie vers le site, non réservable.
-# Tout client NON-Dart (site web, admin, curl...) reçoit les formules
-# normales — c'est le comportement par défaut.
-MOBILE_PSEUDO_FORMULA_ID = -1
-
-
-def _is_mobile_app(request) -> bool:
-    """True si la requête vient de l'app Flutter (client HTTP Dart)."""
-    ua = (request.headers.get("user-agent") or "")
-    return "dart" in ua.lower()
-
-
-def _mobile_pseudo_formula() -> dict:
-    return {
-        "id": MOBILE_PSEUDO_FORMULA_ID,
-        "name": "Formules mecs — sur le site",
-        "description": ("Les formules mecs se réservent sur listeparty.com. "
-                        "Rends-toi sur le site pour choisir ta formule et "
-                        "payer ta place."),
-        "price_cents": 0,
-        "position": 999,
-        "max_guests": 0,
-        "is_girls_only": 0,
-        "event_ids": [],
-    }
 
 
 @app.put("/formulas/{formula_id}/events", response_model=schemas.FormulaOut)
