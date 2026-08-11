@@ -95,6 +95,14 @@ class FormulaOut(BaseModel):
     position:      int
     max_guests:    int = 0
     is_girls_only: int = 0
+    # soirées auxquelles la formule est attribuée (vide = toutes)
+    event_ids:     List[int] = []
+
+
+class FormulaEventsIn(BaseModel):
+    """Remplace la liste des soirées attribuées à une formule.
+    Liste vide = formule visible sur toutes les soirées."""
+    event_ids: List[int] = []
 
 
 class FormulaCreate(BaseModel):

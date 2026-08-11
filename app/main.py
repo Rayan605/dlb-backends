@@ -659,10 +659,90 @@ async def _save_imgs(conn, event_id, images, is_recap):
 
 
 # ─── FORMULAS ─────────────────────────────────────────────
+def _formula_event_ids(conn, formula_id: int) -> list:
+    rows = conn.execute(
+        "SELECT event_id FROM event_formulas WHERE formula_id=? ORDER BY event_id",
+        (formula_id,),
+    ).fetchall()
+    return [r["event_id"] for r in rows]
+
+
+def _formulas_for_event(conn, event_id: int) -> list:
+    """Formules attribuées à une soirée. Repli : si la soirée n'a aucune
+    attribution, on renvoie toutes les formules (comportement historique)."""
+    assigned = conn.execute("""
+        SELECT f.* FROM formulas f
+        JOIN event_formulas ef ON ef.formula_id = f.id
+        WHERE ef.event_id = ?
+        ORDER BY f.position ASC, f.id ASC
+    """, (event_id,)).fetchall()
+    if assigned:
+        return assigned
+    return conn.execute(
+        "SELECT * FROM formulas ORDER BY position ASC, id ASC"
+    ).fetchall()
+
+
 @app.get("/formulas", response_model=List[schemas.FormulaOut])
-def list_formulas():
+def list_formulas(event_id: Optional[int] = None):
+    """Sans event_id : toutes les formules (usage admin).
+    Avec event_id : uniquement celles attribuées à cette soirée."""
     with get_db() as conn:
-        return conn.execute("SELECT * FROM formulas ORDER BY position ASC, id ASC").fetchall()
+        if event_id is not None:
+            ev = conn.execute("SELECT id FROM events WHERE id=?", (event_id,)).fetchone()
+            if not ev:
+                raise HTTPException(404, "Soirée introuvable.")
+            rows = _formulas_for_event(conn, event_id)
+        else:
+            rows = conn.execute(
+                "SELECT * FROM formulas ORDER BY position ASC, id ASC"
+            ).fetchall()
+        out = []
+        for f in rows:
+            d = dict(f)
+            d["event_ids"] = _formula_event_ids(conn, f["id"])
+            out.append(d)
+        return out
+
+
+def _assert_formula_on_event(conn, formula_id: int, event_id: int) -> None:
+    """Refuse une formule non attribuée à cette soirée (protège l'API directe).
+    Si la soirée n'a aucune attribution, toutes les formules sont acceptées."""
+    has_any = conn.execute(
+        "SELECT 1 FROM event_formulas WHERE event_id=? LIMIT 1", (event_id,)
+    ).fetchone()
+    if not has_any:
+        return
+    ok = conn.execute(
+        "SELECT 1 FROM event_formulas WHERE event_id=? AND formula_id=?",
+        (event_id, formula_id),
+    ).fetchone()
+    if not ok:
+        raise HTTPException(400, "Cette formule n'est pas disponible pour cette soirée.")
+
+
+@app.put("/formulas/{formula_id}/events", response_model=schemas.FormulaOut)
+def set_formula_events(formula_id: int, payload: schemas.FormulaEventsIn,
+                       admin: dict = Depends(require_admin)):
+    """Définit à quelles soirées une formule est attribuée.
+    Liste vide = visible sur toutes les soirées."""
+    with get_db() as conn:
+        f = conn.execute("SELECT * FROM formulas WHERE id=?", (formula_id,)).fetchone()
+        if not f:
+            raise HTTPException(404, "Formule introuvable.")
+        for eid in payload.event_ids:
+            ev = conn.execute("SELECT id FROM events WHERE id=?", (eid,)).fetchone()
+            if not ev:
+                raise HTTPException(404, f"Soirée {eid} introuvable.")
+        conn.execute("DELETE FROM event_formulas WHERE formula_id=?", (formula_id,))
+        for eid in payload.event_ids:
+            conn.execute(
+                "INSERT OR IGNORE INTO event_formulas (event_id, formula_id) VALUES (?,?)",
+                (eid, formula_id),
+            )
+        d = dict(f)
+        d["event_ids"] = _formula_event_ids(conn, formula_id)
+        return d
 
 
 @app.post("/formulas", response_model=schemas.FormulaOut, status_code=201)
@@ -689,7 +769,10 @@ def update_formula(formula_id: int, payload: schemas.FormulaUpdate, admin: dict 
         if ups:
             params.append(formula_id)
             conn.execute(f"UPDATE formulas SET {', '.join(ups)} WHERE id=?", params)
-        return conn.execute("SELECT * FROM formulas WHERE id=?", (formula_id,)).fetchone()
+        row = conn.execute("SELECT * FROM formulas WHERE id=?", (formula_id,)).fetchone()
+        d = dict(row)
+        d["event_ids"] = _formula_event_ids(conn, formula_id)
+        return d
 
 
 @app.delete("/formulas/{formula_id}", status_code=204)
@@ -714,7 +797,7 @@ def public_formula_availability(event_id: int):
         ev = conn.execute("SELECT id FROM events WHERE id=?", (event_id,)).fetchone()
         if not ev:
             raise HTTPException(404, "Soirée introuvable.")
-        formulas = conn.execute("SELECT * FROM formulas ORDER BY position").fetchall()
+        formulas = _formulas_for_event(conn, event_id)
         result = {}
         for f in formulas:
             count = conn.execute(
@@ -751,6 +834,7 @@ def create_checkout(payload: schemas.ReservationCreate, user: dict = Depends(get
         formula = conn.execute("SELECT * FROM formulas WHERE id=?", (payload.formula_id,)).fetchone()
         if not formula:
             raise HTTPException(404, "Formule introuvable.")
+        _assert_formula_on_event(conn, payload.formula_id, payload.event_id)
 
         # Paid existante → bloquer
         if conn.execute(
@@ -841,6 +925,7 @@ def create_free_reservation(payload: schemas.ReservationCreate, user: dict = Dep
         formula = conn.execute("SELECT * FROM formulas WHERE id=?", (payload.formula_id,)).fetchone()
         if not formula:
             raise HTTPException(404, "Formule introuvable.")
+        _assert_formula_on_event(conn, payload.formula_id, payload.event_id)
         if not formula.get("is_girls_only"):
             raise HTTPException(400, "Cette formule n'est pas une formule filles.")
 

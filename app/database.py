@@ -168,6 +168,22 @@ def init_db():
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_devtok_token ON device_tokens(device_token)")
 
+        # EVENT ↔ FORMULAS — liaison N-N : une formule peut être attribuée à
+        # plusieurs soirées, et une soirée n'affiche que ses formules.
+        # Règle de repli : si une soirée n'a AUCUNE ligne ici, elle affiche
+        # toutes les formules (comportement historique préservé).
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS event_formulas (
+            event_id   INTEGER NOT NULL,
+            formula_id INTEGER NOT NULL,
+            PRIMARY KEY (event_id, formula_id),
+            FOREIGN KEY (event_id)   REFERENCES events(id)   ON DELETE CASCADE,
+            FOREIGN KEY (formula_id) REFERENCES formulas(id) ON DELETE CASCADE
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_evform_event   ON event_formulas(event_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_evform_formula ON event_formulas(formula_id)")
+
         _migrate(cur)
 
         # Seed formules réelles
@@ -241,3 +257,9 @@ def _migrate(cur):
     f_cols2 = {r["name"] for r in cur.execute("PRAGMA table_info(formulas)").fetchall()}
     if "is_girls_only" not in f_cols2:
         cur.execute("ALTER TABLE formulas ADD COLUMN is_girls_only INTEGER DEFAULT 0")
+
+    # formulas : max_reservations (utilisé par /formula-availability).
+    # Absent du CREATE TABLE historique : on le crée ici pour les DB neuves.
+    f_cols3 = {r["name"] for r in cur.execute("PRAGMA table_info(formulas)").fetchall()}
+    if "max_reservations" not in f_cols3:
+        cur.execute("ALTER TABLE formulas ADD COLUMN max_reservations INTEGER DEFAULT 0")
