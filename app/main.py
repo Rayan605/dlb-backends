@@ -742,21 +742,7 @@ def list_formulas(request: Request, event_id: Optional[int] = None,
     Dart), on renvoie soit les formules filles (compte F), soit une formule
     pseudo non réservable renvoyant vers le site. Tout autre client reçoit
     les formules normales."""
-    if _is_mobile_app(request):
-        gender = (user or {}).get("gender")
-        with get_db() as conn:
-            if event_id is not None:
-                rows = _formulas_for_event(conn, event_id)
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM formulas ORDER BY position ASC, id ASC"
-                ).fetchall()
-            if gender == "F":
-                girls = [dict(f) for f in rows if f["is_girls_only"]]
-                for d in girls:
-                    d["event_ids"] = _formula_event_ids(conn, d["id"])
-                return girls
-            return [_mobile_pseudo_formula()]
+    
 
     # Comportement normal (site web, admin, tout client non-Dart)
     with get_db() as conn:
