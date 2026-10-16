@@ -145,6 +145,7 @@ class ReservationOut(BaseModel):
     invite_token:       Optional[str] = None
     event_title:        Optional[str] = None
     event_date:         Optional[str] = None
+    event_address:      Optional[str] = None  # révélé seulement si paid
     formula_name:       Optional[str] = None
     formula_max_guests: Optional[int] = None
     # données user pour le scan
@@ -163,6 +164,7 @@ class GuestReservationOut(BaseModel):
     created_at:     Optional[str] = None
     event_title:    Optional[str] = None
     event_date:     Optional[str] = None
+    event_address: Optional[str] = None  # invitation acceptée uniquement
     host_first_name: Optional[str] = None
     host_last_name:  Optional[str] = None
 

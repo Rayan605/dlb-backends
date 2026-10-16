@@ -513,7 +513,7 @@ def _event_extras(conn, event, mobile: bool = False):
         seats_left  = max(0, max_people - taken)
 
     return {
-        **event,
+        **{**event, "city": "Adresse révélée à l’achat"},
         "is_past": bool(event.get("is_past")),
         "reservations_open": event.get("reservations_open", 1),
         "images":       [_img_out(i) for i in imgs if not i["is_recap"]],
@@ -532,6 +532,17 @@ def _img_out(img):
         "media_type": img.get("media_type") or "image",
     }
 
+
+
+
+@app.get("/admin/events/{event_id}/location")
+def admin_event_location(event_id: int, admin: dict = Depends(require_admin)):
+    """Lecture admin de la vraie valeur de city (adresse privée)."""
+    with get_db() as conn:
+        ev = conn.execute("SELECT id, title, city FROM events WHERE id=?", (event_id,)).fetchone()
+        if not ev:
+            raise HTTPException(404, "Soirée introuvable.")
+        return ev
 
 @app.post("/events", response_model=schemas.EventOut, status_code=201)
 async def create_event(
@@ -1028,6 +1039,7 @@ def create_free_reservation(payload: schemas.ReservationCreate, user: dict = Dep
 
         res = conn.execute(
             """SELECT r.*, e.title as event_title, e.date as event_date,
+                      CASE WHEN r.status='paid' THEN NULLIF(e.city, '') ELSE NULL END AS event_address,
                       f.name as formula_name, f.max_guests as formula_max_guests,
                       u.first_name as holder_first_name, u.last_name as holder_last_name
                FROM reservations r
@@ -1111,6 +1123,7 @@ def list_my_reservations(user: dict = Depends(get_current_user)):
     with get_db() as conn:
         return conn.execute(
             """SELECT r.*, e.title as event_title, e.date as event_date,
+                      CASE WHEN r.status='paid' THEN NULLIF(e.city, '') ELSE NULL END AS event_address,
                       f.name as formula_name, f.max_guests as formula_max_guests,
                       u.first_name as holder_first_name, u.last_name as holder_last_name
                FROM reservations r
@@ -1145,6 +1158,7 @@ def confirm_by_session(session_id: str, user: dict = Depends(get_current_user)):
     with get_db() as conn:
         return conn.execute(
             """SELECT r.*, e.title as event_title, e.date as event_date,
+                      CASE WHEN r.status='paid' THEN NULLIF(e.city, '') ELSE NULL END AS event_address,
                       f.name as formula_name, f.max_guests as formula_max_guests,
                       u.first_name as holder_first_name, u.last_name as holder_last_name
                FROM reservations r
@@ -1179,6 +1193,7 @@ def get_reservation_qr(reservation_id: int, user: dict = Depends(get_current_use
         "holder_name": holder,
         "event_title": ev["title"],
         "event_date":  ev["date"],
+        "event_address": ev.get("city") or None,
         "formula_name": formula["name"],
         "quantity": res["quantity"],
     }
@@ -1197,6 +1212,7 @@ def scan_qr(qr_token: str, scanner: dict = Depends(require_scanner)):
         # --- Réservation normale ---
         res = conn.execute(
             """SELECT r.*, e.title as event_title, e.date as event_date,
+                      CASE WHEN r.status='paid' THEN NULLIF(e.city, '') ELSE NULL END AS event_address,
                       f.name as formula_name,
                       u.first_name as holder_first, u.last_name as holder_last
                FROM reservations r
@@ -1314,7 +1330,7 @@ def get_invite_info(invite_token: str):
         "host_name":          f"{res['host_first']} {res['host_last']}",
         "event_title":        res["event_title"],
         "event_date":         res["event_date"],
-        "event_city":         res["city"],
+        "event_city":         "Adresse révélée à l’achat",
         "formula_name":       res["formula_name"],
         "max_guests":         res["max_guests"],
         "guests_registered":  guests,
@@ -1361,6 +1377,7 @@ def join_as_guest(invite_token: str, user: dict = Depends(get_current_user)):
             "guest_user_id": user["id"], "event_id": res["event_id"],
             "qr_token": qr_tok, "status": "active", "created_at": None,
             "event_title": res["event_title"], "event_date": res["event_date"],
+            "event_address": conn.execute("SELECT city FROM events WHERE id=?", (res["event_id"],)).fetchone()["city"] or None,
             "host_first_name": host["first_name"], "host_last_name": host["last_name"],
         }
 
@@ -1386,6 +1403,7 @@ def get_guest_qr(guest_id: int, user: dict = Depends(get_current_user)):
         "host_name":   host_name,
         "event_title": event["title"],
         "event_date":  event["date"],
+        "event_address": event.get("city") or None,
     }
 
 
@@ -1394,6 +1412,7 @@ def list_my_guest_reservations(user: dict = Depends(get_current_user)):
     with get_db() as conn:
         return conn.execute(
             """SELECT gr.*, e.title as event_title, e.date as event_date,
+                      NULLIF(e.city, '') AS event_address,
                       u.first_name as host_first_name, u.last_name as host_last_name
                FROM guest_reservations gr
                JOIN events e       ON e.id=gr.event_id
@@ -1410,6 +1429,7 @@ def list_my_guest_reservations(user: dict = Depends(get_current_user)):
 def admin_list_reservations(event_id: Optional[int] = None, admin: dict = Depends(require_admin)):
     with get_db() as conn:
         q = """SELECT r.*, e.title as event_title, e.date as event_date,
+                      CASE WHEN r.status='paid' THEN NULLIF(e.city, '') ELSE NULL END AS event_address,
                       f.name as formula_name, f.max_guests as formula_max_guests,
                       u.first_name as holder_first_name, u.last_name as holder_last_name
                FROM reservations r
