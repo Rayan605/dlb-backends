@@ -1435,7 +1435,8 @@ def admin_list_reservations(event_id: Optional[int] = None, admin: dict = Depend
                 FROM reservations r
                 JOIN events e  ON e.id=r.event_id
                 JOIN formulas f ON f.id=r.formula_id
-                JOIN users u   ON u.id=r.user_id"""
+                JOIN users u   ON u.id=r.user_id
+                """
         if event_id:
             return conn.execute(q + " WHERE r.event_id=? AND r.hidden = 0 ORDER BY r.created_at DESC", (event_id,)).fetchall()
-        return conn.execute(q + " ORDER BY r.created_at DESC").fetchall()
+        return conn.execute(q + "WHERE r.hidden = 0 ORDER BY r.created_at DESC").fetchall()
