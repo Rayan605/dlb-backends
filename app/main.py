@@ -1429,13 +1429,13 @@ def list_my_guest_reservations(user: dict = Depends(get_current_user)):
 def admin_list_reservations(event_id: Optional[int] = None, admin: dict = Depends(require_admin)):
     with get_db() as conn:
         q = """SELECT r.*, e.title as event_title, e.date as event_date,
-                      CASE WHEN r.status='paid' THEN NULLIF(e.city, '') ELSE NULL END AS event_address,
-                      f.name as formula_name, f.max_guests as formula_max_guests,
-                      u.first_name as holder_first_name, u.last_name as holder_last_name
-               FROM reservations r
-               JOIN events e  ON e.id=r.event_id
-               JOIN formulas f ON f.id=r.formula_id
-               JOIN users u   ON u.id=r.user_id"""
+                    CASE WHEN r.status='paid' THEN NULLIF(e.city, '') ELSE NULL END AS event_address,
+                    f.name as formula_name, f.max_guests as formula_max_guests,
+                    u.first_name as holder_first_name, u.last_name as holder_last_name
+                FROM reservations r
+                JOIN events e  ON e.id=r.event_id
+                JOIN formulas f ON f.id=r.formula_id
+                JOIN users u   ON u.id=r.user_id"""
         if event_id:
-            return conn.execute(q + " WHERE r.event_id=? ORDER BY r.created_at DESC", (event_id,)).fetchall()
+            return conn.execute(q + " WHERE r.event_id=? AND r.hidden = 0 ORDER BY r.created_at DESC", (event_id,)).fetchall()
         return conn.execute(q + " ORDER BY r.created_at DESC").fetchall()
